@@ -1,0 +1,254 @@
+import os
+import sys
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+
+if __package__ is None or __package__ == "":
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+
+from common.data_utils import DataUtility
+from common.augment import build_augment_config
+from common.seed import set_global_seed
+from common.metrics import confusion_matrix, format_confusion_matrix
+import common.backend as backend
+from convolutional.architectures import (
+    LeNet,
+    BaselineCNN,
+    AlexNet,
+    VGG16,
+    ResNet18,
+    EfficientNetLite0,
+    ConvNeXtTiny,
+)
+from convolutional.trainer import ConvTrainer
+from vectorized.optim import Adam, Lookahead
+
+
+ARCH_REGISTRY = {
+    "lenet": LeNet(),
+    "baseline": BaselineCNN(),
+    "alexnet": AlexNet(),
+    "vgg16": VGG16(),
+    "resnet18": ResNet18(),
+    "efficientnet_lite0": EfficientNetLite0(),
+    "convnext_tiny": ConvNeXtTiny(),
+}
+
+ARCH_CHOICES = tuple(sorted(ARCH_REGISTRY.keys()))
+ARCH_HELP = "Architecture key ({0}).".format(", ".join(ARCH_CHOICES))
+
+
+def build_cnn(name="baseline", num_classes=10):
+    name = name.lower()
+    if name not in ARCH_REGISTRY:
+        raise ValueError(f"Unknown architecture '{name}'. Available: {list(ARCH_REGISTRY)}")
+    builder = ARCH_REGISTRY[name]
+    return builder.build(num_classes=num_classes)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train/evaluate convolutional architectures.")
+    parser.add_argument(
+        "arch",
+        nargs="?",
+        default="baseline",
+        choices=ARCH_CHOICES,
+        help=ARCH_HELP,
+    )
+    parser.add_argument("--epochs", type=int, default=8, help="Number of training epochs.")
+    parser.add_argument("--batch-size", type=int, default=64, help="Mini-batch size.")
+    parser.add_argument("--val-split", type=float, default=0.1, help="Fraction of training data for validation (0 disables).")
+    parser.add_argument("--seed", type=int, default=42, help="Global RNG seed for reproducibility.")
+    parser.add_argument("--save", type=str, help="Path to save trained weights.")
+    parser.add_argument("--load", type=str, help="Load weights before training/evaluation.")
+    parser.add_argument("--no-augment", action="store_true", help="Disable train-time augmentation.")
+    parser.add_argument("--augment-max-shift", type=int, default=2, help="Pixel shift radius for jitter.")
+    parser.add_argument("--augment-rotate-deg", type=float, default=10.0, help="Max rotation degrees (0 disables).")
+    parser.add_argument("--augment-rotate-prob", type=float, default=0.5, help="Probability of applying rotation.")
+    parser.add_argument("--augment-hflip-prob", type=float, default=0.5, help="Probability of horizontal flip.")
+    parser.add_argument("--augment-vflip-prob", type=float, default=0.0, help="Probability of vertical flip.")
+    parser.add_argument("--augment-noise-std", type=float, default=0.02, help="Stddev for Gaussian noise (0 disables).")
+    parser.add_argument("--augment-noise-prob", type=float, default=0.3, help="Probability of injecting noise.")
+    parser.add_argument("--augment-noise-clip", type=float, default=3.0, help="Clamp magnitude after noise.")
+    parser.add_argument("--augment-cutout-prob", type=float, default=0.0, help="Probability of applying cutout masks.")
+    parser.add_argument("--augment-cutout-size", type=int, default=4, help="Cutout square size in pixels.")
+    parser.add_argument("--augment-cutmix-prob", type=float, default=0.0, help="Probability of CutMix (mix labels).")
+    parser.add_argument("--augment-cutmix-alpha", type=float, default=1.0, help="Beta alpha for CutMix lambda.")
+    parser.add_argument("--augment-randaug-layers", type=int, default=0, help="Number of RandAugment layers (0 disables).")
+    parser.add_argument("--augment-randaug-magnitude", type=float, default=0.0, help="RandAugment magnitude (0-1).")
+    parser.add_argument("--skip-train", action="store_true", help="Skip training phase (use with --load).")
+    parser.add_argument("--gpu", action="store_true", help="Use CuPy GPU backend if available.")
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=None,
+        help="Clip global gradient norm to this value (disabled by default).",
+    )
+    parser.add_argument(
+        "--lookahead",
+        action="store_true",
+        help="Wrap the base optimizer with Lookahead (k-step).",
+    )
+    parser.add_argument(
+        "--lookahead-k",
+        type=int,
+        default=5,
+        help="Lookahead sync interval (k steps).",
+    )
+    parser.add_argument(
+        "--lookahead-alpha",
+        type=float,
+        default=0.5,
+        help="Lookahead interpolation factor alpha.",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Enable matplotlib plots (disabled by default). Visualization requires an extra inference sweep.",
+    )
+    parser.add_argument(
+        "--show-misclassified",
+        action="store_true",
+        help="Collect misclassified samples after evaluation; adds a full pass over the test set.",
+    )
+    parser.add_argument(
+        "--confusion-matrix",
+        action="store_true",
+        help="Print the confusion matrix on the test set after evaluation.",
+    )
+    return parser.parse_args()
+
+
+def main(opts=None):
+    args = opts or parse_args()
+    arch_name = args.arch.lower()
+    if args.gpu:
+        try:
+            backend.use_gpu()
+            print("GPU backend enabled via CuPy.")
+        except RuntimeError as exc:
+            print(f"[WARN] {exc} Falling back to CPU backend.")
+            backend.use_cpu()
+    set_global_seed(args.seed)
+    X_train, y_train, X_test, y_test = DataUtility("data").load_data()
+    val_split = min(max(args.val_split, 0.0), 0.4)
+    X_train, y_train, X_val, y_val = DataUtility.train_val_split(
+        X_train, y_train, val_fraction=val_split, seed=args.seed
+    )
+    X_train = X_train.reshape(-1, 1, 28, 28).astype(np.float32)
+    X_test = X_test.reshape(-1, 1, 28, 28).astype(np.float32)
+    if X_val is not None:
+        X_val = X_val.reshape(-1, 1, 28, 28).astype(np.float32)
+        print(f"[Data] Validation split: {len(X_val)} samples ({val_split*100:.1f}%).")
+
+    model = build_cnn(arch_name, num_classes=10)
+    optim = Adam(lr=5e-4, weight_decay=1e-4)
+    if args.lookahead:
+        optim = Lookahead(optim, k=args.lookahead_k, alpha=args.lookahead_alpha)
+    augment_config = build_augment_config(
+        max_shift=args.augment_max_shift,
+        rotate_deg=args.augment_rotate_deg,
+        rotate_prob=args.augment_rotate_prob,
+        hflip_prob=args.augment_hflip_prob,
+        vflip_prob=args.augment_vflip_prob,
+        noise_std=args.augment_noise_std,
+        noise_prob=args.augment_noise_prob,
+        noise_clip=args.augment_noise_clip,
+        cutout_prob=args.augment_cutout_prob,
+        cutout_size=args.augment_cutout_size,
+        cutmix_prob=args.augment_cutmix_prob,
+        cutmix_alpha=args.augment_cutmix_alpha,
+        randaugment_layers=args.augment_randaug_layers,
+        randaugment_magnitude=args.augment_randaug_magnitude,
+    )
+    trainer = ConvTrainer(
+        model,
+        optim,
+        num_classes=10,
+        grad_clip_norm=args.grad_clip,
+        augment_config=augment_config,
+    )
+
+    if args.load:
+        meta = trainer.load_model(args.load)
+        msg = f"Loaded weights from {args.load}"
+        if meta:
+            msg += f" | metadata: {meta}"
+        print(msg)
+
+    if not args.skip_train:
+        trainer.train(
+            X_train,
+            y_train,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            verbose=True,
+            val_data=(X_val, y_val) if X_val is not None else None,
+            augment=not args.no_augment,
+        )
+        if args.plot:
+            plot_loss(trainer.loss_history)
+    else:
+        print("Skipping training as requested.")
+
+    if args.confusion_matrix:
+        acc, preds, targets = trainer.evaluate(X_test, y_test, return_preds=True)
+        cm = confusion_matrix(preds, targets, num_classes=10)
+        print("Confusion Matrix:\n" + format_confusion_matrix(cm))
+    else:
+        trainer.evaluate(X_test, y_test)
+    if args.show_misclassified or args.plot:
+        imgs, preds, trues, total = trainer.collect_misclassifications(X_test, y_test, max_images=25)
+        if args.plot and total:
+            if not confirm_heavy_step("collect and plot misclassifications"):
+                return
+            plot_misclassifications(imgs, preds, trues, total, cols=5)
+
+    if args.save:
+        metadata = {"arch": arch_name, "epochs": args.epochs}
+        trainer.save_model(args.save, metadata=metadata)
+        print(f"Saved weights to {args.save}")
+
+
+def confirm_heavy_step(action):
+    resp = input(f"\nAbout to {action}, which runs another full inference pass. Continue? [y/N]: ").strip().lower()
+    return resp in {"y", "yes"}
+
+
+def plot_loss(loss_history):
+    if not loss_history:
+        return
+    epochs = range(1, len(loss_history) + 1)
+    plt.figure()
+    plt.plot(epochs, loss_history, marker="o")
+    plt.title("Convolutional Training Loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_misclassifications(imgs, preds, trues, total, cols=5):
+    n = len(imgs)
+    cols = max(1, min(cols, n))
+    rows = int(np.ceil(n / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.2, rows * 2.2))
+    axes = np.atleast_1d(axes).ravel()
+    for ax, img, true, pred in zip(axes, imgs, trues, preds):
+        disp = img
+        if disp.ndim == 3 and disp.shape[0] == 1:
+            disp = disp[0]
+        ax.imshow(disp, cmap="gray")
+        ax.set_title(f"T:{int(true)} P:{int(pred)}")
+        ax.axis("off")
+    for ax in axes[n:]:
+        ax.axis("off")
+    fig.suptitle(f"Misclassifications: showing {n} of {total}")
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

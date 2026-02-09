@@ -1,0 +1,92 @@
+site_name: The Ethical Researcher's Guide to Using AI Tools
+site_description: A comprehensive workshop on responsible AI usage in academic research
+site_url: https://davar3.github.io/ethical-ai-guide
+repo_url: https://github.com/Davar3/ethical-ai-guide
+repo_name: ethical-ai-guide
+
+copyright: |
+  Workshop by Dr. Awara Bakhtiyar Rasool &amp; Davar Adil Yassin<br>
+  Salahaddin University-Erbil
+
+nav:
+  - Home: index.md
+  - AI Tools Overview: ai-tools.md
+  - Prompt Engineering: prompt-engineering.md
+  - Research Tasks:
+    - Overview: prompts/index.md
+    - 1. Gap Finding: prompts/gap-finding.md
+    - 2. Title Generation: prompts/title-generation.md
+    - 3. Research Outline: prompts/research-outline.md
+    - 4. Research Questions: prompts/research-questions.md
+    - 5. Literature Review: prompts/literature-review.md
+    - 6. Novel Concepts: prompts/novel-concepts.md
+    - 7. Article Comparison: prompts/article-comparison.md
+    - 8. Data Analysis: prompts/data-analysis.md
+    - 9. Visualization: prompts/visualization.md
+    - 10. Reference Management: prompts/references.md
+    - 11. LaTeX Formatting: prompts/latex.md
+  - Ethics & Integrity:
+    - AI Hallucinations: ethics/hallucinations.md
+    - Ethical Guidelines: ethics/guidelines.md
+  - Resources: resources.md
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/logo.png
+  palette:
+    - scheme: slate
+      primary: deep orange
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+    - scheme: default
+      primary: deep orange
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: Fira Code
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Davar3/ethical-ai-guide
+  generator: false
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search

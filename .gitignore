@@ -1,0 +1,24 @@
+# LaTeX
+*.aux
+*.log
+*.out
+*.toc
+*.nav
+*.snm
+*.vrb
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.pdf
+!presentation/main.pdf
+!website/docs/assets/main.pdf
+
+# Python / MkDocs
+__pycache__/
+site/
+env/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
